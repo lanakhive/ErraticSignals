@@ -1,23 +1,33 @@
 "use strict";
-// Snapchit
+// Erratic Signals
 
 // main context
 var gl;
 var canvas;
 var frameID;
-//var canvas;
+
+var resizeFunc;
 
 // tuning settings
 var sett = {
-	lineColor: [0.4, 1.0, 0.0],
-	backColor: [0.03, 0.03, 0.03],
-	tint: 0.03,
-	lineCount: 300,
-	preBuf: 20480,
+	lineColor: [1.0, 0.0, 0.0], //nrgb color of lines
+	backColor: [0.03, 0.03, 0.03], //nrgb color of background
+	tint: 0.01, //multiplier amount to tint background with lineColor
+	lineCount: 300, //amount of lines
+	speed: 1.0, //multiplier for line speed
+	custom: false, //override lineColor/tint with customLineColor/customTint
+	customLineColor: [1.0, 0.0, 0.0], //user set line color
+	customTint: 0.01, //user set tint
+	cycle: true, //activate rgb color cycle
+	cycleSpeed:  0.01, //speed of rgb color cycle
+	cycleVal: 0.0, //current auto hue used by rgb cycle
+	preBuf: 20480, //size of gl memory buffer for line vertexes
+	pixelDiv: 1, //pixel scale divisor
 };
 
 function prepareCanvas()
 {
+	console.log("Erratic Signals v1.0");
 	canvas = document.createElement("canvas");
 	canvas.style.width = "100%";
 	canvas.style.height = "100%";
@@ -27,14 +37,18 @@ function prepareCanvas()
 	var dim = canvas.getBoundingClientRect();
 	canvas.width = dim.width;
 	canvas.height = dim.height;
+
+	// prepare context event handlers, can happen anytime after context creation
+	canvas.addEventListener('webglcontextlost', contextLost, false);
+	canvas.addEventListener('webglcontextrestored', contextRegen, false);
+
 	return canvas;
 }
 
 function init(canvas)
 {
-	canvas.addEventListener('webglcontextlost', contextLost, false);
-	canvas.addEventListener('webglcontextrestored', contextRegen, false);
-	gl = canvas.getContext("webgl", {antialias: false,preserveDrawingBuffer:false});
+	// create context
+	gl = canvas.getContext("webgl", {antialias: false, preserveDrawingBuffer: true});
 	var vao = gl.getExtension("OES_vertex_array_object");
 	gl.clearColor(0.04,0.04,0.04,1.0);
 	gl.clear(gl.COLOR_BUFFER_BIT);
@@ -162,20 +176,19 @@ function init(canvas)
 	function run(timestep)
 	{
 		// update dt
-		add += (timestep - lastTimestep);
+		// add += (timestep - lastTimestep);
 		dt = (timestep - lastTimestep) / 1000;
 		lastTimestep = timestep;
 
 		// perf start
-		t1 = performance.now();
-
+		// t1 = performance.now();
 
 		updateMain(dt);
 
-		if (add > 1000) {
-			console.log("%c[P] Update Perf: %.4f ms", "color: #fc0;", performance.now() - t1);
-		}
-		t1 = performance.now();
+		// if (add > 1000) {
+		// 	console.log("%c[P] Update Perf: %.4f ms", "color: #fc0;", performance.now() - t1);
+		// }
+		// t1 = performance.now();
 
 		// upload vertex data stream and realloc array and buffer if needed
 		prepareArray();
@@ -184,15 +197,25 @@ function init(canvas)
 		if (arr.length > bufferAllocated) {
 			bufferAllocated = Math.ceil(arr.length/sett.preBuf)*sett.preBuf;
 			gl.bufferData(gl.ARRAY_BUFFER, bufferAllocated*4, gl.STREAM_DRAW);
-			console.log("[A] bufferData alloc: " + bufferAllocated);
+			//console.log("[A] bufferData alloc: " + bufferAllocated);
 		}
 		gl.bufferSubData(gl.ARRAY_BUFFER, 0, arr);
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-		var bgc = sett.backColor;
-		var lc = sett.lineColor;
-		var tint = sett.tint;
-		var bgc2 = [bgc[0]+lc[0]*tint, bgc[1]+lc[1]*tint, bgc[2]+lc[2]*tint];
+		if (sett.cycle) cycle(dt);
+
+		var bgc, lc, tint;
+		if (sett.custom)
+		{
+			bgc = sett.backColor;
+			lc = sett.customLineColor;
+			tint = sett.customTint;
+		} else {
+			bgc = sett.backColor;
+			lc = sett.lineColor;
+			tint = sett.tint;
+		}
+		var bgc2 = [clamp(bgc[0]+lc[0]*tint,0,1), clamp(bgc[1]+lc[1]*tint,0,1), clamp(bgc[2]+lc[2]*tint,0,1)];
 
 		// clear background to sett color
 		gl.clearColor(bgc2[0],bgc2[1],bgc2[2],1.0);
@@ -207,7 +230,12 @@ function init(canvas)
 		gl.clear(gl.COLOR_BUFFER_BIT);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-		// blending functions are totally wrong but look good this way
+		// if no vertex in buffer, dont draw anything
+		if (arrayTotal == 0) {
+			frameID = requestAnimationFrame(run);
+			return;
+		}
+		// blending functions are used totally wrong but look good this way
 		gl.enable(gl.BLEND);
 
 		// draw lines to fb1
@@ -247,10 +275,10 @@ function init(canvas)
 		gl.useProgram(null);
 		vao.bindVertexArrayOES(null);
 
-		if (add > 1000) {
-			console.log("%c[P] Draw Perf: %.4f ms", "color:#ff0;", performance.now() - t1);
-			add = 0;
-		}
+		// if (add > 1000) {
+		// 	console.log("%c[P] Draw Perf: %.4f ms", "color:#ff0;", performance.now() - t1);
+		// 	add = 0;
+		// }
 
 		frameID = requestAnimationFrame(run);
 	}
@@ -272,8 +300,8 @@ function init(canvas)
 		resizeID = null;
 		// refresh internal canvas res
 		var dim = gl.canvas.getBoundingClientRect();
-		gl.canvas.width = dim.width;
-		gl.canvas.height = dim.height;
+		gl.canvas.width = dim.width/sett.pixelDiv;
+		gl.canvas.height = dim.height/sett.pixelDiv;
 		// refresh camera projection matrix
 		pm = ortho(gl.canvas.width, gl.canvas.height);
 		// refresh viewport size transformation 
@@ -296,6 +324,7 @@ function init(canvas)
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.canvas.width, gl.canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 		gl.bindTexture(gl.TEXTURE_2D, null);
 	}
+	resizeFunc = resizeactivate;
 
 }
 
@@ -359,7 +388,7 @@ function prepareArray()
 	{
 		arrayAllocated = Math.ceil(total/sett.preBuf)*sett.preBuf;
 		arr = new Float32Array(arrayAllocated);
-		console.log("[A] prepareArray alloc: " + arrayAllocated);
+		//console.log("[A] prepareArray alloc: " + arrayAllocated);
 	}
 	var offset = 0;
 	for (i=0;i<thing.length;i++)
@@ -398,13 +427,14 @@ var thing = [];
 function updateMain(dt)
 {
 	if (thing.length == 0) thing.push(new Tris());
-	var max = sett.lineCount;
+	var max = sett.lineCount/(sett.pixelDiv);
 	var i;
 	for (i=0;i<thing.length;i++) {
 		thing[i].update(dt);
 		if (thing[i].done) thing.splice(i,1);
 	}
-	if (randI(1,3) == 2 && thing.length < max) thing.push(new Tris());
+	//if (randI(1,2) == 2 && thing.length < max) thing.push(new Tris());
+	while (thing.length < max) thing.push(new Tris());
 }
 
 ///////////////////////////////////////////////////////////
@@ -427,30 +457,32 @@ function clamp(a,b,c)
 function Tris(x,y)
 {
 	var cw = gl.canvas.width, ch = gl.canvas.height;
-	this.pts = [];
-	this.bias = randI(1,4);
-	this.done = false;
-	this.last = 0;
-	this.bx = x || randI(1,cw/10)*10;
-	this.by = y || randI(1,ch/10)*10;
-	this.px = this.bx;
-	this.py = this.by;
-	this.life = randI(1,50)+50;
-	this.w = 1;
-	this.pw = 2.5;
-	this.vert = [];
+	this.pts = [];                    //array of points
+	this.bias = randI(1,4);           //direction bias
+	this.done = false;                //reached end of life
+	this.last = 0;                    //last direction
+	this.bx = x || randI(1,cw/10)*10; //current x
+	this.by = y || randI(1,ch/10)*10; //current y
+	this.px = this.bx;                //prev x
+	this.py = this.by;                //prev y
+	this.life = randI(1,50)+50;       //life remaining
+	this.w = 1;                       //line half width
+	this.pw = 2.5;                    //point radius
+	this.noReverse = (randI(0,8)==1); //can reverse on itself
+	this.vert = [];                   //triangle vertex array
 	this.update = Tris_update;
 	this.genMesh = Tris_genMesh;
 }
 
+// global vars to control timing
 var jitter = 20;
 var time = 0;
 function Tris_update(dt)
 {
-	time = time + dt * 2000;
+	time = time + dt * 2000 * sett.speed;
 	if (time < jitter) return;
 	time = 0;
-	jitter = randI(10,25);
+	jitter = randI(10,25)/sett.speed;
 
 	if (this.life == 0 && this.pts.length == 0) {
 		this.done = true;
@@ -461,7 +493,7 @@ function Tris_update(dt)
 		if (this.pts.length != 0) {
 			this.bx = this.bx + this.pts[0].x;
 			this.by = this.by + this.pts[0].y;
-			this.pts.splice(0,1);
+			this.pts.shift();
 			this.genMesh();
 		}
 	}
@@ -473,8 +505,12 @@ function Tris_update(dt)
 	var amt = randI(1,3) * 10; //amount to move
 	if (du > 4) du = du - 4;
 	if (du < 1) du = du + 4;
-	if ((du == (this.last + 2) % 4) && false)
+	if ((du == (this.last + 2) % 4) && this.noReverse)
 		du = (du + 2) % 4;
+	// if (du == 1) {dy = -amt;dx= (-amt/1.5)*(randI(0,1)*2-1)} //up
+	// if (du == 2) {dx = amt;}  //right
+	// if (du == 3) {dy = amt;dx= (-amt/1.5)*(randI(0,1)*2-1)}  //down
+	// if (du == 4) {dx = -amt;} //left
 	if (du == 1) dy = -amt; //up
 	if (du == 2) dx = amt;  //right
 	if (du == 3) dy = amt;  //down
@@ -489,39 +525,31 @@ function Tris_update(dt)
 	this.py = this.py + dy;
 	this.last = du;
 	this.life = this.life - 1;
-	if (this.px < 0 || this.px > gl.canvas.width) this.life = 0;
-	if (this.py < 0 || this.py > gl.canvas.height) this.life = 0;
+	var margin = 100; //offscreen margin where things dont die
+	if (this.px < 0-margin || this.px > gl.canvas.width+margin) this.life = 0;
+	if (this.py < 0-margin || this.py > gl.canvas.height+margin) this.life = 0;
 }
 
-var linecount = 0;
 function Tris_genMesh()
 {
-	if (this.done || this.pts.length < 2) this.vert = [];
-	var px = this.bx;
-	var py = this.by;
-	var nx = 0;
-	var ny = 0;
-	var c = 0;
-	var pc = 0;
-	var w = this.w;
 	this.vert = [];
-	var i,j;
-	var v = this.vert;
-	var o = 0;
-	for (i=0;i<this.pts.length;i++) {
+	if (this.done || this.pts.length < 2) return;
+	var px = this.bx,
+		py = this.by,
+		nx = 0,
+		ny = 0,
+		c = 0,
+		pc = 0,
+		w = this.w,
+		pw = this.pw,
+		i, j,
+		v = this.vert,
+		o = 0;
+	for (i=0; i<this.pts.length; i++) {
 		j = this.pts[i];
 		nx = px + j.x;
 		ny = py + j.y;
 		if (i > 0) {
-			/*
-			this.vert.push(
-				px-w, py-w, pc,
-				px+w, py+w, pc,
-				nx-w, ny-w, c,
-				px+w, py+w, pc,
-				nx+w, ny+w, c,
-				nx-w, ny-w, c);
-			*/
 			v[o++]=px-w; v[o++]=py-w; v[o++]=pc;
 			v[o++]=px+w; v[o++]=py+w; v[o++]=pc;
 			v[o++]=nx-w; v[o++]=ny-w; v[o++]=c;
@@ -529,22 +557,13 @@ function Tris_genMesh()
 			v[o++]=nx+w; v[o++]=ny+w; v[o++]=c;
 			v[o++]=nx-w; v[o++]=ny-w; v[o++]=c;
 		}
-		linecount = linecount + 1;
 		pc = c;
 		c = c + (255 / this.pts.length);
 		px = nx;
 		py = ny;
 	}
-	var pw = this.pw;
-	/*
-	this.vert.push(
-		nx, ny+pw, pc,
-		nx-pw, ny, pc,
-		nx, ny-pw, pc,
-		nx, ny+pw, pc,
-		nx+pw, ny, pc,
-		nx, ny-pw, pc);
-	*/
+
+	// diamond tip
 	v[o++]=nx; v[o++]=ny+pw; v[o++]=pc;
 	v[o++]=nx-pw; v[o++]=ny; v[o++]=pc;
 	v[o++]=nx; v[o++]=ny-pw; v[o++]=pc;
@@ -553,9 +572,9 @@ function Tris_genMesh()
 	v[o++]=nx; v[o++]=ny-pw; v[o++]=pc;
 
 	//laser cast
-	//this.vert.push(500, 500, 128);
-	//this.vert.push(nx+pw, ny, 64);
-	//this.vert.push(nx, ny-pw, 64);
+	// this.vert.push(canvas.width/2-canvas.width/8+randI(1,10), canvas.height/2+canvas.height/8+randI(1,10), 128);
+	// this.vert.push(nx+pw, ny, 64);
+	// this.vert.push(nx, ny-pw, 64);
 }
 
 ///////////////////////////////////////////////////////////
@@ -581,7 +600,8 @@ var fragmentShaderStd =
 varying float opacity;
 uniform vec3 color;
 void main() {
-	gl_FragColor = vec4(color, opacity);
+	//gl_FragColor = vec4(color, opacity);
+	gl_FragColor = vec4(mix(color,(1.0+sin(gl_FragCoord.y*0.05)*sin(gl_FragCoord.x*0.07))*color,0.4), opacity);
 }`;
 
 // post processing shaders
@@ -657,21 +677,165 @@ void main() {
 }`; 
 
 ///////////////////////////////////////////////////////////
+// Color Cycle
+///////////////////////////////////////////////////////////
+function cycle(dt)
+{
+	sett.cycleVal = (sett.cycleVal + dt*sett.cycleSpeed)%1.0;
+	sett.lineColor = hslToRgb(sett.cycleVal,1.0,.5);
+	//sett.tint = Math.sin(Math.PI*sett.cycleVal)*.05;
+	//sett.tint = 0;
+}
+function hslToRgb(h, s, l) {
+  var r, g, b;
+
+  if (s == 0) {
+    r = g = b = l; // achromatic
+  } else {
+    function hue2rgb(p, q, t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    }
+
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [r,g,b];
+}
+///////////////////////////////////////////////////////////
 // User control
 ///////////////////////////////////////////////////////////
 
-function setLineColor(r,g,b)
+function setColorProgram(num)
 {
-	r = clamp(r, 0.0, 1.0);
-	g = clamp(g, 0.0, 1.0);
-	b = clamp(b, 0.0, 1.0);
-	sett.lineColor = [r,g,b];
+	sett.cycle = false;
+	sett.custom = false;
+	switch (num) {
+		// cycle
+		case 1:
+			sett.cycle = true;
+			sett.tint = 0.01;
+			sett.backColor = [0.03,0.03,0.03];
+			break;
+		// red
+		case 2:
+			sett.lineColor = [1.0,0.0,0.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.01;
+			break;
+		// emerald
+		case 3:
+			sett.lineColor = [0.0,1.0,0.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.01;
+			break;
+		// violet
+		case 4:
+			sett.lineColor = [0.45,0.0,1.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.05;
+			break;
+		// amber
+		case 5:
+			sett.lineColor = [1.0,0.35,0.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.02;
+			break;
+		// light blue
+		case 6:
+			sett.lineColor = [0.0,0.866,1.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.02;
+			break;
+		// pink
+		case 7:
+			sett.lineColor = [1.0,0.0,0.43];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.02;
+			break;
+		// light green
+		case 8:
+			sett.lineColor = [0.5,1.0,0.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.03;
+			break;
+		// blue
+		case 9:
+			sett.lineColor = [0.0,0.0,1.0];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.05;
+			break;
+		// grey
+		case 10:
+			sett.lineColor = [0.8,0.8,0.8];
+			sett.backColor = [0.03,0.03,0.03];
+			sett.tint = 0.03;
+			break;
+		// black on white
+		case 11:
+			sett.lineColor = [0.1,0.1,0.1];
+			sett.backColor = [0.9,0.9,0.9];
+			sett.tint = 0.0;
+			break;
+		// custom
+		case 12:
+			sett.custom = true;
+			sett.backColor = [0.03,0.03,0.03];
+			break;
+		default:
+			break;
+	}
 }
 
-
-
-
-
+//wallpaper engine events
+window.wallpaperPropertyListener = {
+	applyUserProperties: function(properties) {
+		if (properties.linecount) {
+			var count = properties.linecount.value;
+			sett.lineCount = count;
+		}
+		if (properties.activity) {
+			var speed = properties.activity.value/10.0;
+			sett.speed = speed;
+		}
+		if (properties.linecolor) {
+			var color = properties.linecolor.value.split(' ');
+			sett.customLineColor = color;
+		}
+		// if (properties.backcolor) {
+		// 	var color = properties.backcolor.value.split(' ');
+		// 	sett.backColor = [clamp(color[0],0.0,1.0),clamp(color[1],0.0,1.0),clamp(color[2],0.0,1.0)];
+		// }
+		if (properties.tint) {
+			sett.customTint = properties.tint.value/100.0;
+		}
+		if (properties.colorset) {
+			setColorProgram(properties.colorset.value);
+		}
+		if (properties.cyclespeed) {
+			var cyclespeed = properties.cyclespeed.value;
+			sett.cycleSpeed = cyclespeed/1000.0;
+		}
+		if (properties.pixelsize) {
+			sett.pixelDiv = clamp(properties.pixelsize.value,0,4);
+			resizeFunc();
+			//window.dispatchEvent(new Event('resize'));
+		}
+	},
+	applyGeneralProperties: function(properties) {
+		if (properties.fps) {
+			//env.fps = properties.fps;
+		}
+	}
+};
 
 // start the program
 function start()
