@@ -1,5 +1,5 @@
 "use strict";
-// Erratic Signals
+// Irradiant Shards
 
 // main context
 var gl;
@@ -13,21 +13,23 @@ var sett = {
 	lineColor: [1.0, 0.0, 0.0], //nrgb color of lines
 	backColor: [0.03, 0.03, 0.03], //nrgb color of background
 	tint: 0.01, //multiplier amount to tint background with lineColor
-	lineCount: 300, //amount of lines
-	speed: 1.0, //multiplier for line speed
+	lineCount: 800, //amount of lines
+	speed: 0.15, //multiplier for line speed
 	custom: false, //override lineColor/tint with customLineColor/customTint
 	customLineColor: [1.0, 0.0, 0.0], //user set line color
 	customTint: 0.01, //user set tint
 	cycle: true, //activate rgb color cycle
-	cycleSpeed:  0.01, //speed of rgb color cycle
+	cycleSpeed:  0.005, //speed of rgb color cycle
 	cycleVal: 0.0, //current auto hue used by rgb cycle
-	preBuf: 20480, //size of gl memory buffer for line vertexes
-	pixelDiv: 1, //pixel scale divisor
+	pixelDiv: 3, //pixel scale divisor
 };
+
+const lineDiv = 400;
+const preBuf = 20480; //size of gl memory buffer for line vertexes
 
 function prepareCanvas()
 {
-	console.log("Erratic Signals v1.0");
+	console.log("Irradiant Shards v1.0");
 	canvas = document.createElement("canvas");
 	canvas.style.width = "100%";
 	canvas.style.height = "100%";
@@ -35,12 +37,16 @@ function prepareCanvas()
 	var script = scripts[scripts.length-1];
 	script.parentNode.insertBefore(canvas,script);
 	var dim = canvas.getBoundingClientRect();
-	canvas.width = dim.width;
-	canvas.height = dim.height;
+	canvas.width = dim.width/sett.pixelDiv;
+	canvas.height = dim.height/sett.pixelDiv;
 
 	// prepare context event handlers, can happen anytime after context creation
+	canvas.addEventListener('webglcontextcreationerror', contextError, false);
 	canvas.addEventListener('webglcontextlost', contextLost, false);
 	canvas.addEventListener('webglcontextrestored', contextRegen, false);
+
+	//scale line count by resolution
+	sett.lineCount = Math.floor(canvas.width*canvas.height/lineDiv);
 
 	return canvas;
 }
@@ -71,50 +77,30 @@ function init(canvas)
 	var mvmU = gl.getUniformLocation(shadProg, 'modelViewMatrix');
 	var pmU = gl.getUniformLocation(shadProg, 'projectionMatrix');
 	var colorU = gl.getUniformLocation(shadProg, 'color');
+	var timeU = gl.getUniformLocation(shadProg, 'time');
+	var cycleU = gl.getUniformLocation(shadProg, 'cycle');
 
 	// create blur shader programs
 	var blurVertShad = gl.createShader(gl.VERTEX_SHADER);
 	gl.shaderSource(blurVertShad, vertexShaderBlur);
 	gl.compileShader(blurVertShad);
-	var blurFragShadX = gl.createShader(gl.FRAGMENT_SHADER);
-	gl.shaderSource(blurFragShadX, fragmentShaderBlurX);
-	gl.compileShader(blurFragShadX);
-	var blurFragShadY = gl.createShader(gl.FRAGMENT_SHADER);
-	gl.shaderSource(blurFragShadY, fragmentShaderBlurY);
-	gl.compileShader(blurFragShadY);
 	var blurFragShadNone = gl.createShader(gl.FRAGMENT_SHADER);
 	gl.shaderSource(blurFragShadNone, fragmentShaderBlurNone);
 	gl.compileShader(blurFragShadNone);
-	var shadProgPro1 = gl.createProgram();
-	gl.attachShader(shadProgPro1, blurVertShad);
-	gl.attachShader(shadProgPro1, blurFragShadX);
-	gl.bindAttribLocation(shadProgPro1, 0, 'position');
-	gl.linkProgram(shadProgPro1);
-	var shadProgPro2 = gl.createProgram();
-	gl.attachShader(shadProgPro2, blurVertShad);
-	gl.attachShader(shadProgPro2, blurFragShadY);
-	gl.bindAttribLocation(shadProgPro2, 0, 'position');
-	gl.linkProgram(shadProgPro2);
 	var shadProgPro3 = gl.createProgram();
 	gl.attachShader(shadProgPro3, blurVertShad);
 	gl.attachShader(shadProgPro3, blurFragShadNone);
 	gl.bindAttribLocation(shadProgPro3, 0, 'position');
 	gl.linkProgram(shadProgPro3);
 
-	gl.useProgram(shadProgPro1);
-	gl.uniform2f(gl.getUniformLocation(shadProgPro1, 'screenSize'), canvas.width, canvas.height);
-	gl.uniform1i(gl.getUniformLocation(shadProgPro1, 'texture'), 0);
-	gl.useProgram(shadProgPro2);
-	gl.uniform2f(gl.getUniformLocation(shadProgPro2, 'screenSize'), canvas.width, canvas.height);
-	gl.uniform1i(gl.getUniformLocation(shadProgPro2, 'texture'), 0);
 	gl.useProgram(shadProgPro3);
 	gl.uniform2f(gl.getUniformLocation(shadProgPro3, 'screenSize'), canvas.width, canvas.height);
 	gl.uniform1i(gl.getUniformLocation(shadProgPro3, 'texture'), 0);
+	var timeUB = gl.getUniformLocation(shadProgPro3, 'time');
 	gl.useProgram(null);
 
 	// create framebuffers with textures
 	var fb1 = createFB();
-	var fb2 = createFB();
 
 	// setup fullscreen quad for post blur
 	var screenQuad = new Float32Array([ -1.0,-1.0, 1.0,-1.0, -1.0, 1.0, 1.0, 1.0 ]);
@@ -169,9 +155,12 @@ function init(canvas)
 	var lastUpdate = Date.now();
 	var lastTimestep = 0;
 	var dt = 0;
+	var elapsed = 0;
 
 	var add = 0;
 	var t1 = 0;
+
+	sett.cycleVal = Math.random();
 
 	function run(timestep)
 	{
@@ -179,6 +168,7 @@ function init(canvas)
 		// add += (timestep - lastTimestep);
 		dt = (timestep - lastTimestep) / 1000;
 		lastTimestep = timestep;
+		elapsed+=dt;
 
 		// perf start
 		// t1 = performance.now();
@@ -195,7 +185,7 @@ function init(canvas)
 		gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
 		//gl.bufferData(gl.ARRAY_BUFFER, arr.length*4, gl.STREAM_DRAW);
 		if (arr.length > bufferAllocated) {
-			bufferAllocated = Math.ceil(arr.length/sett.preBuf)*sett.preBuf;
+			bufferAllocated = Math.ceil(arr.length/preBuf)*preBuf;
 			gl.bufferData(gl.ARRAY_BUFFER, bufferAllocated*4, gl.STREAM_DRAW);
 			//console.log("[A] bufferData alloc: " + bufferAllocated);
 		}
@@ -221,12 +211,11 @@ function init(canvas)
 		gl.clearColor(bgc2[0],bgc2[1],bgc2[2],1.0);
 		gl.clear(gl.COLOR_BUFFER_BIT);
 
-		// clear framebuffer textures to transparent black
+		// clear framebuffer textures to sett color
+		// the alpha will control the strength of noise applied only to bg
+		// since noise is only applied to framebuffer texture parts that arent transparent
 		gl.bindFramebuffer(gl.FRAMEBUFFER, fb1.buffer);
-		gl.clearColor(0.0,0.0,0.0,0.0);
-		gl.clear(gl.COLOR_BUFFER_BIT);
-		gl.bindFramebuffer(gl.FRAMEBUFFER, fb2.buffer);
-		gl.clearColor(0.0,0.0,0.0,0.0);
+		gl.clearColor(bgc2[0],bgc2[1],bgc2[2],0.6);
 		gl.clear(gl.COLOR_BUFFER_BIT);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -241,10 +230,15 @@ function init(canvas)
 		// draw lines to fb1
 		gl.useProgram(shadProg);
 		gl.uniform3f(colorU, lc[0], lc[1], lc[2]);
+		gl.uniform1f(timeU, (elapsed*sett.speed) );
+		gl.uniform1f(cycleU, sett.cycleVal);
 		vao.bindVertexArrayOES(vao1);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, fb1.buffer);
 		gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+		// draw normal
 		gl.drawArrays(gl.TRIANGLES,0,arrayTotal/3);
+		// draw wireframe
+		// for (var i=0; i < arrayTotal/3; i+=3) gl.drawArrays(gl.LINE_LOOP, i, 3);
 		vao.bindVertexArrayOES(null);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -252,22 +246,9 @@ function init(canvas)
 		// blur post processing
 		vao.bindVertexArrayOES(vaoBlur);
 
-		// blur pass x from fb1 to fb2
-		gl.activeTexture(gl.TEXTURE0);
-		gl.bindTexture(gl.TEXTURE_2D, fb1.texture);
-		gl.useProgram(shadProgPro1);
-		gl.bindFramebuffer(gl.FRAMEBUFFER, fb2.buffer);
-		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-		// blur pass y from fb2 to viewport
-		gl.activeTexture(gl.TEXTURE0);
-		gl.bindTexture(gl.TEXTURE_2D, fb2.texture);
-		gl.useProgram(shadProgPro2);
-		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
 		// lines from fb1 to viewport
 		gl.useProgram(shadProgPro3);
+		gl.uniform1f(timeUB, (elapsed*sett.speed)%100);
 		gl.bindTexture(gl.TEXTURE_2D, fb1.texture);
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -302,6 +283,8 @@ function init(canvas)
 		var dim = gl.canvas.getBoundingClientRect();
 		gl.canvas.width = dim.width/sett.pixelDiv;
 		gl.canvas.height = dim.height/sett.pixelDiv;
+		//scale line count by resolution
+		sett.lineCount = Math.floor(canvas.width*canvas.height/lineDiv);
 		// refresh camera projection matrix
 		pm = ortho(gl.canvas.width, gl.canvas.height);
 		// refresh viewport size transformation 
@@ -310,22 +293,22 @@ function init(canvas)
 		// refresh res dependent uniforms across all shader programs
 		gl.useProgram(shadProg);
 		gl.uniformMatrix4fv(pmU, false, pm);
-		gl.useProgram(shadProgPro1);
-		gl.uniform2f(gl.getUniformLocation(shadProgPro1, 'screenSize'), gl.canvas.width, gl.canvas.height);
-		gl.useProgram(shadProgPro2);
-		gl.uniform2f(gl.getUniformLocation(shadProgPro2, 'screenSize'), gl.canvas.width, gl.canvas.height);
 		gl.useProgram(shadProgPro3);
 		gl.uniform2f(gl.getUniformLocation(shadProgPro3, 'screenSize'), gl.canvas.width, gl.canvas.height);
 		gl.useProgram(null);
 		// refresh texture sizes
 		gl.bindTexture(gl.TEXTURE_2D, fb1.texture);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.canvas.width, gl.canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-		gl.bindTexture(gl.TEXTURE_2D, fb2.texture);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.canvas.width, gl.canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 		gl.bindTexture(gl.TEXTURE_2D, null);
 	}
 	resizeFunc = resizeactivate;
 
+}
+
+// Webgl context creation error event handler
+function contextError(event)
+{
+	console.log("WebGL Context could not be created.");
 }
 
 // Webgl context lost event handler
@@ -386,7 +369,7 @@ function prepareArray()
 		total += thing[i].vert.length;
 	if (total > arrayAllocated)
 	{
-		arrayAllocated = Math.ceil(total/sett.preBuf)*sett.preBuf;
+		arrayAllocated = Math.ceil(total/preBuf)*preBuf;
 		arr = new Float32Array(arrayAllocated);
 		//console.log("[A] prepareArray alloc: " + arrayAllocated);
 	}
@@ -451,13 +434,23 @@ function clamp(a,b,c)
 	return Math.max(b,Math.min(c,a));
 }
 
+function lerp(x1,x2,t)
+{
+	return x1 + t * (x2 - x1);
+}
+
+function ss(x)
+{
+	return 3*x*x-2*x*x*x;
+}
+
 ///////////////////////////////////////////////////////////
 // Tris object
 ///////////////////////////////////////////////////////////
 function Tris(x,y)
 {
 	var cw = gl.canvas.width, ch = gl.canvas.height;
-	this.pts = [];                    //array of points
+	this.pts = [];                    //array of point offsets
 	this.bias = randI(1,4);           //direction bias
 	this.done = false;                //reached end of life
 	this.last = 0;                    //last direction
@@ -466,20 +459,45 @@ function Tris(x,y)
 	this.px = this.bx;                //prev x
 	this.py = this.by;                //prev y
 	this.life = randI(1,50)+50;       //life remaining
-	this.w = 1;                       //line half width
+	this.w = 10;                       //line half width
 	this.pw = 2.5;                    //point radius
 	this.noReverse = (randI(0,8)==1); //can reverse on itself
 	this.vert = [];                   //triangle vertex array
 	this.update = Tris_update;
 	this.genMesh = Tris_genMesh;
+	this.lp = 1;
+	this.ndx = 0;
+	this.ndy = 0;
 }
 
 // global vars to control timing
 var jitter = 20;
 var time = 0;
+//really bad stuff in here =D
 function Tris_update(dt)
 {
 	time = time + dt * 2000 * sett.speed;
+	//do movement lerp
+	if (this.lp < 1) {
+		var d = Math.sqrt(this.ndx*this.ndx+this.ndy*this.ndy)*0.1;
+		this.lp = this.lp + dt * 10 * sett.speed / d;
+		if (this.lp > 1) this.lp = 1;
+		var last = this.pts.length - 1;
+		var curr = this.pts[last];
+		var nx  = lerp(0,this.ndx,ss(this.lp));
+		var ny  = lerp(0,this.ndy,ss(this.lp));
+		this.pts[last].x = nx;
+		this.pts[last].y = ny;
+		//smooth fade out opacity (only during movement)
+		for (var i=0; i<this.pts.length; i++) {
+			var j = this.pts[i];
+			if (j.do > j.o) this.pts[i].do = this.pts[i].do - 255*dt*sett.speed*2;
+			if (j.do < j.o) this.pts[i].do = j.o;
+			if (j.do < 0) this.pts[i].do = 0;
+		}
+		this.genMesh();
+		return;
+	}
 	if (time < jitter) return;
 	time = 0;
 	jitter = randI(10,25)/sett.speed;
@@ -489,7 +507,7 @@ function Tris_update(dt)
 		return;
 	}
 	if (randI(1,4) != 1) return;
-	if (randI(1,3) == 1) {
+	if (randI(1,4) == 1) {
 		if (this.pts.length != 0) {
 			this.bx = this.bx + this.pts[0].x;
 			this.by = this.by + this.pts[0].y;
@@ -502,7 +520,7 @@ function Tris_update(dt)
 	var du = this.bias + randI(1,3) - 1; //destination direction
 	var dx = 0;
 	var dy = 0;
-	var amt = randI(1,3) * 10; //amount to move
+	var amt = randI(1,6) * 10; //amount to move
 	if (du > 4) du = du - 4;
 	if (du < 1) du = du + 4;
 	if ((du == (this.last + 2) % 4) && this.noReverse)
@@ -519,7 +537,10 @@ function Tris_update(dt)
 	//if (this.bias == 2) dx = dx * 2;
 	//if (this.bias == 3) dy = dy * 4;
 	//if (this.bias == 4) dx = dx * 4;
-	this.pts.push({x: dx, y: dy});
+	this.pts.push({x: 0, y: 0, o: 255, do: 255});
+	this.lp = 0;
+	this.ndx = dx;
+	this.ndy = dy;
 	this.genMesh();
 	this.px = this.px + dx;
 	this.py = this.py + dy;
@@ -544,37 +565,33 @@ function Tris_genMesh()
 		pw = this.pw,
 		i, j,
 		v = this.vert,
-		o = 0;
+		o = 0,
+		co = 0,
+		po = 0;
 	for (i=0; i<this.pts.length; i++) {
 		j = this.pts[i];
 		nx = px + j.x;
 		ny = py + j.y;
+
+		// if (j.do > j.o) this.pts[i].do = this.pts[i].do - 0.5;
+		// if (j.do < 0) this.pts[i].do = 0;
+		this.pts[i].o = c;
+		co = j.do;
 		if (i > 0) {
-			v[o++]=px-w; v[o++]=py-w; v[o++]=pc;
-			v[o++]=px+w; v[o++]=py+w; v[o++]=pc;
-			v[o++]=nx-w; v[o++]=ny-w; v[o++]=c;
-			v[o++]=px+w; v[o++]=py+w; v[o++]=pc;
-			v[o++]=nx+w; v[o++]=ny+w; v[o++]=c;
-			v[o++]=nx-w; v[o++]=ny-w; v[o++]=c;
+			v[o++]=px-w; v[o++]=py-w; v[o++]=po;
+			v[o++]=px+w; v[o++]=py+w; v[o++]=po;
+			v[o++]=nx-w; v[o++]=ny-w; v[o++]=co;
+			v[o++]=px+w; v[o++]=py+w; v[o++]=po;
+			v[o++]=nx+w; v[o++]=ny+w; v[o++]=co;
+			v[o++]=nx-w; v[o++]=ny-w; v[o++]=co;
 		}
+		po = co;
 		pc = c;
 		c = c + (255 / this.pts.length);
 		px = nx;
 		py = ny;
 	}
 
-	// diamond tip
-	v[o++]=nx; v[o++]=ny+pw; v[o++]=pc;
-	v[o++]=nx-pw; v[o++]=ny; v[o++]=pc;
-	v[o++]=nx; v[o++]=ny-pw; v[o++]=pc;
-	v[o++]=nx; v[o++]=ny+pw; v[o++]=pc;
-	v[o++]=nx+pw; v[o++]=ny; v[o++]=pc;
-	v[o++]=nx; v[o++]=ny-pw; v[o++]=pc;
-
-	//laser cast
-	// this.vert.push(canvas.width/2-canvas.width/8+randI(1,10), canvas.height/2+canvas.height/8+randI(1,10), 128);
-	// this.vert.push(nx+pw, ny, 64);
-	// this.vert.push(nx, ny-pw, 64);
 }
 
 ///////////////////////////////////////////////////////////
@@ -592,6 +609,7 @@ uniform mat4 projectionMatrix;
 varying float opacity;
 void main() {
 	opacity = position.z/255.0;
+	//mat4 a = mat4(1.,.1*cos(.1*position.x)-0.5,.1*sin(.1*position.y),0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.);
 	gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy,0.0, 1.0);
 }`;
 
@@ -599,9 +617,28 @@ var fragmentShaderStd =
 `precision highp float;
 varying float opacity;
 uniform vec3 color;
+uniform float time;
+uniform float cycle;
+
+vec3 pal( in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d )
+{
+    return a + b*cos( 6.28318*(c*t+d) );
+}
+vec3 aa = vec3(.5,.5,.5);
+vec3 bb = vec3(.5,.5,.5);
+vec3 cc = vec3(.5,.5,.5);
+vec3 dd = vec3(.2,.33,.67);
+
 void main() {
 	//gl_FragColor = vec4(color, opacity);
-	gl_FragColor = vec4(mix(color,(1.0+sin(gl_FragCoord.y*0.05)*sin(gl_FragCoord.x*0.07))*color,0.4), opacity);
+	float amt = (1.0+sin(1.8*time+gl_FragCoord.y*0.05)*sin(1.8*time+gl_FragCoord.x*0.07));
+	float amtx = (1.0+sin(1.8*time+gl_FragCoord.y*0.05)*sin(1.8*time+gl_FragCoord.x*0.07)*.3);
+	float amt2 = (1.0+sin(1.5*time+gl_FragCoord.y*0.007)*sin(1.8*time+gl_FragCoord.x*0.009)*.7);
+	gl_FragColor = vec4(mix(color,amt*color,0.4), opacity);
+	vec3 ra = vec3(mod(cycle+.66,1.0),mod(cycle+.33,1.0),mod(cycle+.99,1.0));
+	vec3 ca = pal(opacity,aa,bb,cc,ra);
+	ca = mix(clamp(amtx*amt2,.7,1.5)*color, ca, 0.5);
+	gl_FragColor = vec4(ca, opacity);
 }`;
 
 // post processing shaders
@@ -615,59 +652,29 @@ void main() {
 	gl_Position = vec4(position.xy, 0.0, 1.0);
 }`;
 
-var fragmentShaderBlurX =
-`precision highp float;
-varying vec2 vTexCoord;
-uniform vec2 screenSize;
-uniform sampler2D texture;
-void main() {
-	vec4 sum = vec4(0.0);
-	float blurSize = 1.0/(screenSize.x/3.0);
-	// blur in x (horizontal)
-	// take nine samples, with the distance blurSize between them
-	sum += texture2D(texture, vec2(vTexCoord.x - 4.0*blurSize, vTexCoord.y)) * 0.05;
-	sum += texture2D(texture, vec2(vTexCoord.x - 3.0*blurSize, vTexCoord.y)) * 0.09;
-	sum += texture2D(texture, vec2(vTexCoord.x - 2.0*blurSize, vTexCoord.y)) * 0.12;
-	sum += texture2D(texture, vec2(vTexCoord.x - blurSize, vTexCoord.y)) * 0.15;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y)) * 0.16;
-	sum += texture2D(texture, vec2(vTexCoord.x + blurSize, vTexCoord.y)) * 0.15;
-	sum += texture2D(texture, vec2(vTexCoord.x + 2.0*blurSize, vTexCoord.y)) * 0.12;
-	sum += texture2D(texture, vec2(vTexCoord.x + 3.0*blurSize, vTexCoord.y)) * 0.09;
-	sum += texture2D(texture, vec2(vTexCoord.x + 4.0*blurSize, vTexCoord.y)) * 0.05;
-
-	gl_FragColor = sum*2.1;
-}`;
-
-var fragmentShaderBlurY = 
-`precision highp float;
-varying vec2 vTexCoord;
-uniform vec2 screenSize;
-uniform sampler2D texture;
-void main() {
-	vec4 sum = vec4(0.0);
-	float blurSize = 1.0/(screenSize.y/3.0);
-	// blur in y (vertical)
-	// take nine samples, with the distance blurSize between them
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y - 4.0*blurSize)) * 0.05;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y - 3.0*blurSize)) * 0.09;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y - 2.0*blurSize)) * 0.12;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y - blurSize)) * 0.15;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y)) * 0.16;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y + blurSize)) * 0.15;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y + 2.0*blurSize)) * 0.12;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y + 3.0*blurSize)) * 0.09;
-	sum += texture2D(texture, vec2(vTexCoord.x, vTexCoord.y + 4.0*blurSize)) * 0.05;
-
-	gl_FragColor = sum*2.1;
-}`; 
 
 var fragmentShaderBlurNone = 
 `precision highp float;
 varying vec2 vTexCoord;
 uniform vec2 screenSize;
+uniform float time;
 uniform sampler2D texture;
+
+float rand(vec2 co)
+{
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
 void main() {
-	gl_FragColor = texture2D(texture, vec2(vTexCoord.x, vTexCoord.y));
+	vec3 noise = vec3(rand(vTexCoord+time));
+	vec4 samp = texture2D(texture, vTexCoord);
+	vec3 bl = mix(samp.rgb, noise, 0.05);
+	//gl_FragColor = texture2D(texture, vec2(vTexCoord.x, vTexCoord.y));
+	vec4 acolor = vec4(bl, samp.a);
+	float vmask = smoothstep(1.,.1,distance(vTexCoord, vec2(0.5,0.5)));
+	acolor.a = mix(0., acolor.a, vmask);
+	gl_FragColor = acolor;
+	//gl_FragColor = vec4(vec3(vmask),1.);
 	//vec4 Color = texture2D(texture, vTexCoord.xy);
     //float dist = distance(vTexCoord.xy, vec2(0.5,0.5));
 	//float cRadius = 0.95;
@@ -683,32 +690,33 @@ function cycle(dt)
 {
 	sett.cycleVal = (sett.cycleVal + dt*sett.cycleSpeed)%1.0;
 	sett.lineColor = hslToRgb(sett.cycleVal,1.0,.5);
+	//by using complementary colors, we can simulate lcd off viewing angles
+	sett.backColor = hslToRgb((sett.cycleVal+0.5)%1.0,1.0,.03);
 	//sett.tint = Math.sin(Math.PI*sett.cycleVal)*.05;
 	//sett.tint = 0;
 }
 function hslToRgb(h, s, l) {
-  var r, g, b;
+	var r, g, b;
 
-  if (s == 0) {
-    r = g = b = l; // achromatic
-  } else {
-    function hue2rgb(p, q, t) {
-      if (t < 0) t += 1;
-      if (t > 1) t -= 1;
-      if (t < 1/6) return p + (q - p) * 6 * t;
-      if (t < 1/2) return q;
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    }
+	if (s == 0) { r = g = b = l; } 
+	else {
+		function hue2rgb(p, q, t) {
+			if (t < 0) t += 1;
+			if (t > 1) t -= 1;
+			if (t < 1/6) return p + (q - p) * 6 * t;
+			if (t < 1/2) return q;
+			if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+			return p;
+		}
 
-    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    var p = 2 * l - q;
+		var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+		var p = 2 * l - q;
 
-    r = hue2rgb(p, q, h + 1/3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1/3);
-  }
-  return [r,g,b];
+		r = hue2rgb(p, q, h + 1/3);
+		g = hue2rgb(p, q, h);
+		b = hue2rgb(p, q, h - 1/3);
+	}
+	return [r,g,b];
 }
 ///////////////////////////////////////////////////////////
 // User control
@@ -722,6 +730,7 @@ function setColorProgram(num)
 		// cycle
 		case 1:
 			sett.cycle = true;
+			sett.cycleVal = Math.random();
 			sett.tint = 0.01;
 			sett.backColor = [0.03,0.03,0.03];
 			break;
