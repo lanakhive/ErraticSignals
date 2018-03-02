@@ -15,13 +15,16 @@ var sett = {
 	tint: 0.01, //multiplier amount to tint background with lineColor
 	lineCount: 800, //amount of lines
 	speed: 0.15, //multiplier for line speed
-	custom: false, //override lineColor/tint with customLineColor/customTint
-	customLineColor: [1.0, 0.0, 0.0], //user set line color
 	customTint: 0.01, //user set tint
 	cycle: true, //activate rgb color cycle
+	customCycleVal: 0.0,
+	customCycleSpeed: 0.0,
 	cycleSpeed:  0.005, //speed of rgb color cycle
 	cycleVal: 0.0, //current auto hue used by rgb cycle
 	pixelDiv: 3, //pixel scale divisor
+	irradiance: 0.5, //amount of hue shift by brightness
+	programMode: 0, //1-color cycle, 2-fixed color
+	fps: 0 // fps limit
 };
 
 const lineDiv = 400;
@@ -45,8 +48,7 @@ function prepareCanvas()
 	canvas.addEventListener('webglcontextlost', contextLost, false);
 	canvas.addEventListener('webglcontextrestored', contextRegen, false);
 
-	//scale line count by resolution
-	sett.lineCount = Math.floor(canvas.width*canvas.height/lineDiv);
+	lineRefresh();
 
 	return canvas;
 }
@@ -79,6 +81,7 @@ function init(canvas)
 	var colorU = gl.getUniformLocation(shadProg, 'color');
 	var timeU = gl.getUniformLocation(shadProg, 'time');
 	var cycleU = gl.getUniformLocation(shadProg, 'cycle');
+	var amountU = gl.getUniformLocation(shadProg, 'amount');
 
 	// create blur shader programs
 	var blurVertShad = gl.createShader(gl.VERTEX_SHADER);
@@ -156,6 +159,7 @@ function init(canvas)
 	var lastTimestep = 0;
 	var dt = 0;
 	var elapsed = 0;
+	var fpsThreshold = 0;
 
 	var add = 0;
 	var t1 = 0;
@@ -169,6 +173,15 @@ function init(canvas)
 		dt = (timestep - lastTimestep) / 1000;
 		lastTimestep = timestep;
 		elapsed+=dt;
+		// fps limiter
+		if (sett.fps > 0) {
+			fpsThreshold += dt;
+			if (fpsThreshold < 1.0 / sett.fps) {
+				frameID = requestAnimationFrame(run);
+				return;
+			}
+			fpsThreshold -= 1.0 / sett.fps;
+		}
 
 		// perf start
 		// t1 = performance.now();
@@ -195,17 +208,19 @@ function init(canvas)
 		if (sett.cycle) cycle(dt);
 
 		var bgc, lc, tint;
-		if (sett.custom)
-		{
-			bgc = sett.backColor;
-			lc = sett.customLineColor;
-			tint = sett.customTint;
-		} else {
-			bgc = sett.backColor;
-			lc = sett.lineColor;
-			tint = sett.tint;
-		}
+		bgc = sett.backColor;
+		lc = sett.lineColor;
+		tint = sett.tint;
 		var bgc2 = [clamp(bgc[0]+lc[0]*tint,0,1), clamp(bgc[1]+lc[1]*tint,0,1), clamp(bgc[2]+lc[2]*tint,0,1)];
+
+		// apply latest custom cycle parameters
+		if (sett.programMode == 1) {
+			sett.cycleSpeed = sett.customCycleSpeed
+		  } else {
+			if (sett.programMode == 2) {
+			  sett.cycleVal = sett.customCycleVal
+			}
+		  }
 
 		// clear background to sett color
 		gl.clearColor(bgc2[0],bgc2[1],bgc2[2],1.0);
@@ -232,6 +247,7 @@ function init(canvas)
 		gl.uniform3f(colorU, lc[0], lc[1], lc[2]);
 		gl.uniform1f(timeU, (elapsed*sett.speed) );
 		gl.uniform1f(cycleU, sett.cycleVal);
+		gl.uniform1f(amountU, sett.irradiance);
 		vao.bindVertexArrayOES(vao1);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, fb1.buffer);
 		gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -284,7 +300,7 @@ function init(canvas)
 		gl.canvas.width = dim.width/sett.pixelDiv;
 		gl.canvas.height = dim.height/sett.pixelDiv;
 		//scale line count by resolution
-		sett.lineCount = Math.floor(canvas.width*canvas.height/lineDiv);
+		lineRefresh();
 		// refresh camera projection matrix
 		pm = ortho(gl.canvas.width, gl.canvas.height);
 		// refresh viewport size transformation 
@@ -418,6 +434,19 @@ function updateMain(dt)
 	}
 	//if (randI(1,2) == 2 && thing.length < max) thing.push(new Tris());
 	while (thing.length < max) thing.push(new Tris());
+}
+
+function preSim()
+{
+	for (var k=1; k<400; k++) {
+		updateMain(0.1);
+	}
+}
+
+function lineRefresh()
+{
+	//scale line count by resolution
+	//sett.lineCount = Math.floor(canvas.width*canvas.height/(lineDiv+sett.lineDivAdd));
 }
 
 ///////////////////////////////////////////////////////////
@@ -613,12 +642,14 @@ void main() {
 	gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy,0.0, 1.0);
 }`;
 
+//mix vertex colors with gradient map by amount
 var fragmentShaderStd = 
 `precision highp float;
 varying float opacity;
 uniform vec3 color;
 uniform float time;
 uniform float cycle;
+uniform float amount;
 
 vec3 pal( in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d )
 {
@@ -631,13 +662,11 @@ vec3 dd = vec3(.2,.33,.67);
 
 void main() {
 	//gl_FragColor = vec4(color, opacity);
-	float amt = (1.0+sin(1.8*time+gl_FragCoord.y*0.05)*sin(1.8*time+gl_FragCoord.x*0.07));
 	float amtx = (1.0+sin(1.8*time+gl_FragCoord.y*0.05)*sin(1.8*time+gl_FragCoord.x*0.07)*.3);
 	float amt2 = (1.0+sin(1.5*time+gl_FragCoord.y*0.007)*sin(1.8*time+gl_FragCoord.x*0.009)*.7);
-	gl_FragColor = vec4(mix(color,amt*color,0.4), opacity);
 	vec3 ra = vec3(mod(cycle+.66,1.0),mod(cycle+.33,1.0),mod(cycle+.99,1.0));
 	vec3 ca = pal(opacity,aa,bb,cc,ra);
-	ca = mix(clamp(amtx*amt2,.7,1.5)*color, ca, 0.5);
+	ca = mix(clamp(amtx*amt2,.7,1.5)*color, ca, amount);
 	gl_FragColor = vec4(ca, opacity);
 }`;
 
@@ -724,80 +753,24 @@ function hslToRgb(h, s, l) {
 
 function setColorProgram(num)
 {
-	sett.cycle = false;
-	sett.custom = false;
 	switch (num) {
 		// cycle
 		case 1:
 			sett.cycle = true;
 			sett.cycleVal = Math.random();
+			sett.cycleSpeed = sett.customCycleSpeed;
 			sett.tint = 0.01;
 			sett.backColor = [0.03,0.03,0.03];
+			sett.programMode = 1;
 			break;
-		// red
+		// fixed
 		case 2:
-			sett.lineColor = [1.0,0.0,0.0];
-			sett.backColor = [0.03,0.03,0.03];
+			sett.cycle = true;
+			sett.cycleVal = sett.customCycleVal;
+			sett.cycleSpeed = 0.0;
 			sett.tint = 0.01;
-			break;
-		// emerald
-		case 3:
-			sett.lineColor = [0.0,1.0,0.0];
 			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.01;
-			break;
-		// violet
-		case 4:
-			sett.lineColor = [0.45,0.0,1.0];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.05;
-			break;
-		// amber
-		case 5:
-			sett.lineColor = [1.0,0.35,0.0];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.02;
-			break;
-		// light blue
-		case 6:
-			sett.lineColor = [0.0,0.866,1.0];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.02;
-			break;
-		// pink
-		case 7:
-			sett.lineColor = [1.0,0.0,0.43];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.02;
-			break;
-		// light green
-		case 8:
-			sett.lineColor = [0.5,1.0,0.0];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.03;
-			break;
-		// blue
-		case 9:
-			sett.lineColor = [0.0,0.0,1.0];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.05;
-			break;
-		// grey
-		case 10:
-			sett.lineColor = [0.8,0.8,0.8];
-			sett.backColor = [0.03,0.03,0.03];
-			sett.tint = 0.03;
-			break;
-		// black on white
-		case 11:
-			sett.lineColor = [0.1,0.1,0.1];
-			sett.backColor = [0.9,0.9,0.9];
-			sett.tint = 0.0;
-			break;
-		// custom
-		case 12:
-			sett.custom = true;
-			sett.backColor = [0.03,0.03,0.03];
+			sett.programMode = 2;
 			break;
 		default:
 			break;
@@ -810,32 +783,36 @@ window.wallpaperPropertyListener = {
 		if (properties.linecount) {
 			var count = properties.linecount.value;
 			sett.lineCount = count;
+			var max = sett.lineCount/(sett.pixelDiv);
+			while (thing.length > max) thing.pop();
 		}
-		if (properties.activity) {
-			var speed = properties.activity.value/10.0;
+		if (properties.movespeed) {
+			var speed = properties.movespeed.value/100.0;
 			sett.speed = speed;
 		}
-		if (properties.linecolor) {
-			var color = properties.linecolor.value.split(' ');
-			sett.customLineColor = color;
+		if (properties.irradiance) {
+			var irradiance = properties.irradiance.value/100.0;
+			sett.irradiance = irradiance;
 		}
-		// if (properties.backcolor) {
-		// 	var color = properties.backcolor.value.split(' ');
-		// 	sett.backColor = [clamp(color[0],0.0,1.0),clamp(color[1],0.0,1.0),clamp(color[2],0.0,1.0)];
-		// }
 		if (properties.tint) {
-			sett.customTint = properties.tint.value/100.0;
+			//sett.customTint = properties.tint.value/100.0;
 		}
 		if (properties.colorset) {
 			setColorProgram(properties.colorset.value);
 		}
 		if (properties.cyclespeed) {
 			var cyclespeed = properties.cyclespeed.value;
-			sett.cycleSpeed = cyclespeed/1000.0;
+			sett.customCycleSpeed = cyclespeed/1000.0;
+		}
+		if (properties.cycleval) {
+			var cycleval = properties.cycleval.value;
+			sett.customCycleVal = cycleval/359.0;
 		}
 		if (properties.pixelsize) {
-			sett.pixelDiv = clamp(properties.pixelsize.value,0,4);
+			sett.pixelDiv = clamp(properties.pixelsize.value,1,4)+2;
 			resizeFunc();
+			thing = [];
+			preSim();
 			//window.dispatchEvent(new Event('resize'));
 		}
 	},

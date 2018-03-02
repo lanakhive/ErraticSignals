@@ -1,4 +1,4 @@
-# Erratic Signals
+# Irradiant Shards
 Animated background made with JavaScript and WebGL API.
 
-![Erratic Signals Preview](preview.gif)
+![Irradiant Shards Preview](preview.gif)
